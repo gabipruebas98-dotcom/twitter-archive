@@ -1,0 +1,71 @@
+
+name: test-gallerydl
+on:
+  workflow_dispatch:
+    inputs:
+      cuenta:
+        description: "@ de la cuenta secundaria (sin @)"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CUENTA: ${{ inputs.cuenta }}
+    steps:
+      - name: Validar nombre de cuenta
+        run: |
+          CUENTA="${CUENTA#@}"
+          if ! printf '%s' "$CUENTA" | grep -Eq '^[A-Za-z0-9_]{1,15}$'; then
+            echo "Nombre de cuenta no válido"; exit 1
+          fi
+          echo "URL=https://x.com/${CUENTA}/timeline" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+
+      - run: pip install gallery-dl
+
+      - name: Escribir y validar cookies (sin imprimirlas)
+        env: {COOKIES: "${{ secrets.TW_COOKIES }}"}
+        run: |
+          printf '%s\n' "$COOKIES" > cookies.txt
+          chmod 600 cookies.txt
+          python3 - <<'EOF'
+          import sys
+          names, bad = set(), 0
+          for l in open("cookies.txt"):
+              l = l.rstrip("\n")
+              if not l.strip() or (l.startswith("#") and not l.startswith("#HttpOnly_")):
+                  continue
+              p = l.split("\t")
+              if len(p) != 7:
+                  bad += 1
+              else:
+                  names.add(p[5])
+          print("lineas mal formadas:", bad)
+          print("auth_token presente:", "auth_token" in names)
+          print("ct0 presente:", "ct0" in names)
+          sys.exit(0 if bad == 0 and {"auth_token", "ct0"} <= names else 1)
+          EOF
+
+      - name: Simulación (no descarga nada)
+        run: |
+          set +e
+          gallery-dl --cookies cookies.txt --simulate --range 1-5 \
+            -o text-tweets=true "$URL"
+          code=$?
+          echo "gallery-dl exit code: $code"
+          exit $code
+
+      - name: Descarga real de hasta 3 elementos (sin Telegram, sin archive)
+        run: |
+          gallery-dl --cookies cookies.txt --range 1-3 -d test_media "$URL"
+          find test_media -type f -exec ls -l {} +
+          test -n "$(find test_media -type f)"
+
+      - name: Borrar cookies y descargas
+        if: always()
+        run: rm -rf cookies.txt test_media
